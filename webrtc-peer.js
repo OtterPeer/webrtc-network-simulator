@@ -434,7 +434,7 @@ class WebRTCPeer {
   constructor(profile, signalingServerURL, token, iceServers) {
     this.profile = profile;
     this.peerId = derivePeerId(profile.publicKey); // Derive peerId from publicKey
-    this.profile.peerId = this.peerId; // Ensure profile has correct peerId
+    this.profile.peerId = derivePeerId(profile.publicKey); // Ensure profile has correct peerId
     this.signalingServerURL = signalingServerURL;
     this.token = token;
     this.iceServers = iceServers;
@@ -451,6 +451,7 @@ class WebRTCPeer {
       throw new Error('Generated public key does not match peerId');
     }
     this.profile.publicKey = publicKey;
+    this.profile.peerId = this.peerId;
     console.log(this.peerId);
     console.log(privateKey);
     privateKeyStore.set(this.peerId, privateKey);
@@ -546,7 +547,7 @@ class WebRTCPeer {
 
   setupDataChannel(dataChannel, targetPeer) {
     const label = dataChannel.label;
-    this.dataChannels.set(`${targetPeer.peerId}:${label}`, dataChannel);
+    this.dataChannels.set(`${targetPeer.peerId}:${this.peerId}:${label}`, dataChannel);
 
     dataChannel.onopen = () => {
       console.log(`Data channel ${label} opened with peer ${targetPeer.peerId}`);
@@ -554,7 +555,7 @@ class WebRTCPeer {
 
     dataChannel.onclose = () => {
       console.log(`Data channel ${label} closed with peer ${targetPeer.peerId}`);
-      this.dataChannels.delete(`${targetPeer.peerId}:${label}`);
+      this.dataChannels.delete(`${targetPeer.peerId}:${this.peerId}:${label}`);
     };
 
     dataChannel.onerror = (error) => {
@@ -564,7 +565,8 @@ class WebRTCPeer {
     if (label === 'profile') {
       dataChannel.onmessage = (event) => {
         if (event.data === 'request_profile') {
-          console.log(`Received profile request from ${targetPeer.peerId}`);
+          console.log(`Received profile request from ${targetPeer.peerId} to peer ${this.peerId}`);
+          console.log(`${this.profile.peerId}, ${this.profile.name}`)
           this.sendProfile(dataChannel);
         }
       };

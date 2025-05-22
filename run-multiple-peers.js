@@ -76,6 +76,7 @@ async function runMultiplePeers(numPeers) {
     const { x, y } = generateRandomXY();
 
     const profile = {
+      peerId: '',
       publicKey: '', // Will be set in init
       name: `Peer ${i + 1}`,
       profilePic: getRandomPhotoAsBase64(), // Random base64-encoded photo
