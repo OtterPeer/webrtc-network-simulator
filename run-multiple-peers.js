@@ -3,16 +3,20 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
+// Start the visualization server
+require('./visualization-server.js');
+
 async function runMultiplePeers(numPeers) {
   const signalingServerURL = process.env.SIGNALING_SERVER_URL;
   const token = process.env.TOKEN || '';
   const iceServers = JSON.parse(process.env.ICE_SERVERS);
   const peers = [];
   const peerInstances = [];
-  console.log("here")
+  console.log("Starting peer simulation...");
 
   // Create peers with profiles
   for (let i = 0; i < numPeers; i++) {
+    await delay(3000);
     const { x, y } = generateRandomXY();
     const profile = {
       publicKey: '',
@@ -38,7 +42,6 @@ async function runMultiplePeers(numPeers) {
     await delay(200);
   }
 
-
   // Simulate message passing (peer1 sends messages to peer2 and peer3)
   setTimeout(() => {
     if (peerInstances[0] && peers[1]) {
@@ -56,7 +59,7 @@ async function runMultiplePeers(numPeers) {
   return peerInstances;
 }
 
-// Helper functions (copied from webrtc-peer.js to avoid circular dependency issues)
+// Helper functions (unchanged)
 function generateRandomXY() {
   const x = (Math.random() * 2 - 1).toFixed(5);
   const y = (Math.random() * 2 - 1).toFixed(5);
@@ -110,6 +113,8 @@ function getRandomPhotoAsBase64() {
   }
 }
 
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 // Run the simulation
 const numPeers = parseInt(process.argv[2]) || 5;
 runMultiplePeers(numPeers).then(peerInstances => {
@@ -121,5 +126,3 @@ runMultiplePeers(numPeers).then(peerInstances => {
   console.error('Error running multiple peers:', error);
   process.exit(1);
 });
-
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

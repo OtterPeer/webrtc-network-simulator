@@ -78,6 +78,15 @@ class DHT extends EventEmitter {
   }
 
   async sendMessage(recipient, message) {
+    // Emit message event for sending
+    this.emit('visualizationEvent', {
+      type: 'message',
+      from: this.nodeId,
+      to: recipient,
+      message: message.content || 'Chat Message',
+      timestamp: Date.now()
+    });
+
     const targetNodeInBuckets = this.buckets.all().find(node => node.id === recipient);
     if (targetNodeInBuckets) {
       const alive = await this.rpc.ping(targetNodeInBuckets);
@@ -110,7 +119,7 @@ class DHT extends EventEmitter {
     if (!signalingMessage.id) {
       signalingMessage.id = uuid();
     }
-
+    
     const targetNodeInBuckets = this.buckets.all().find(node => node.id === recipient);
     if (targetNodeInBuckets) {
       const alive = await this.rpc.ping(targetNodeInBuckets);
@@ -223,7 +232,17 @@ class DHT extends EventEmitter {
   async tryToDeliverCachedMessagesToTarget() {
     await this.cacheStrategy.tryToDeliverCachedMessages(
       (targetId) => this.findAndPingNode(targetId),
-      (node, sender, recipient, message) => this.rpc.sendMessage(node, sender, recipient, message),
+      (node, sender, recipient, message) => {
+        // Emit message event for cached message delivery attempt
+        this.emit('visualizationEvent', {
+          type: 'message',
+          from: sender,
+          to: recipient,
+          message: 'Cached Message Delivery',
+          timestamp: Date.now()
+        });
+        return this.rpc.sendMessage(node, sender, recipient, message);
+      },
       this.MAX_TTL
     );
     this.emit("delivered");
@@ -270,7 +289,17 @@ class DHT extends EventEmitter {
     this.ttlCleanupInterval = setInterval(() => {
       this.cacheStrategy.tryToDeliverCachedMessages(
         (targetId) => this.findAndPingNode(targetId),
-        (node, sender, recipient, message) => this.rpc.sendMessage(node, sender, recipient, message),
+        (node, sender, recipient, message) => {
+          // Emit message event for cached message delivery attempt during cleanup
+          this.emit('visualizationEvent', {
+            type: 'message',
+            from: sender,
+            to: recipient,
+            message: 'Cached Message Delivery (Cleanup)',
+            timestamp: Date.now()
+          });
+          return this.rpc.sendMessage(node, sender, recipient, message);
+        },
         this.MAX_TTL
       ).then(() => {
         console.log(`Cleaned up expired messages; ${this.cacheStrategy.getCachedMessageCount()} remain`);
