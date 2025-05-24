@@ -4,13 +4,18 @@ const crypto = require('crypto');
 const { v4: uuid } = require('uuid');
 const fs = require('fs');
 const path = require('path');
+const EventEmitter = require('events');
 const DHT = require('./dht.js').default;
 const ConnectionManager = require('./connection-manager.js').ConnectionManager;
+
 // In-memory store for user data (replacing userdb)
 const userStore = new Map();
 
 // In-memory store for private keys (replacing AsyncStorage)
 const privateKeyStore = new Map();
+
+// Event emitter for visualization events
+const eventEmitter = new EventEmitter();
 
 // Generate RSA key pair (matching React Native's pkcs1 format)
 function generateKeyPair() {
@@ -266,8 +271,6 @@ async function encryptAnswer(senderId, targetId, sessionDescription, senderPubli
 async function decryptAnswer(encryptedRTCSessionDescription) {
   try {
     const senderUser = userStore.get(encryptedRTCSessionDescription.from);
-    // console.log(senderUser)
-    // console.log(encryptedRTCSessionDescription)
     if (!senderUser || !senderUser.aesKey || !senderUser.iv) {
       throw new Error(`No AES key or IV found for peer ${encryptedRTCSessionDescription.from}`);
     }
@@ -277,7 +280,6 @@ async function decryptAnswer(encryptedRTCSessionDescription) {
     const decryptedAnswer = decryptAndDecodeMessage(aesKey, iv, encryptedRTCSessionDescription.authTag, encryptedRTCSessionDescription.encryptedAnswer);
     return { sdp: decryptedAnswer, type: 'answer' };
   } catch (error) {
-    // console.error(`Error decrypting answer from ${encryptedRTCSessionDescription.from}:`, error); // keyId mismatch - can be ignored, peers will connect on second try
     throw error;
   }
 }
@@ -380,7 +382,11 @@ function sendData(dataChannel, fileData, chunkSize = 16384) {
     }
   };
 
-  sendChunk();
+  try {
+    sendChunk();
+  } catch(err) {
+    console.error(err);
+  }
 }
 
 // WebRTC Peer class
@@ -419,6 +425,29 @@ class WebRTCPeer {
     this.dht.on('ready', () => {
       console.log(`DHT for peer ${this.peerId} is ready`);
     });
+
+    // Add DHT event listeners for visualization
+    this.dht.on('chatMessage', (message) => {
+      console.log(`DHT chatMessage event: ${JSON.stringify(message)}`);
+      eventEmitter.emit('visualizationEvent', {
+        type: 'message',
+        from: message.from || 'unknown',
+        to: this.peerId,
+        message: message.content || 'Chat Message',
+        timestamp: Date.now()
+      });
+    });
+
+    // this.dht.on('signalingMessage', (signalingMessage) => {
+    //   console.log(`DHT signalingMessage event: ${JSON.stringify(signalingMessage)}`);
+    //   eventEmitter.emit('visualizationEvent', {
+    //     type: 'message',
+    //     from: signalingMessage.from,
+    //     to: signalingMessage.target,
+    //     message: 'Signaling Message',
+    //     timestamp: Date.now()
+    //   });
+    // });
 
     // Initialize ConnectionManager
     this.connectionManager = new ConnectionManager(
@@ -493,7 +522,25 @@ class WebRTCPeer {
 
       peerConnection.oniceconnectionstatechange = () => {
         console.log(`I'm peer ${this.peerId}. Connection state with peer: ${targetPeer.peerId} ICE state: ${peerConnection.iceConnectionState}`);
+        if (peerConnection.iceConnectionState === 'connected') {
+          // Emit connection event
+          eventEmitter.emit('visualizationEvent', {
+            type: 'connection',
+            from: this.peerId,
+            to: targetPeer.peerId,
+            state: 'connected',
+            timestamp: Date.now()
+          });
+        }
         if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed' || peerConnection.iceConnectionState === 'closed') {
+          // Emit disconnection event
+          eventEmitter.emit('visualizationEvent', {
+            type: 'connection',
+            from: this.peerId,
+            to: targetPeer.peerId,
+            state: 'disconnected',
+            timestamp: Date.now()
+          });
           this.closeConnection(targetPeer.peerId);
         }
       };
@@ -541,6 +588,23 @@ class WebRTCPeer {
         if (event.data === 'request_profile') {
           console.log(`Received profile request from ${targetPeer.peerId} to peer ${this.peerId}`);
           this.sendProfile(dataChannel);
+          // Emit message event for profile request
+          eventEmitter.emit('visualizationEvent', {
+            type: 'message',
+            from: targetPeer.peerId,
+            to: this.peerId,
+            message: 'Profile Request',
+            timestamp: Date.now()
+          });
+        } else {
+          // Emit message event for profile data received
+          eventEmitter.emit('visualizationEvent', {
+            type: 'message',
+            from: targetPeer.peerId,
+            to: this.peerId,
+            message: 'Profile Data',
+            timestamp: Date.now()
+          });
         }
       };
     } else if (label === 'peer_dto') {
@@ -548,12 +612,37 @@ class WebRTCPeer {
         if (event.data === 'request_peer_dto') {
           console.log(`Received peer_dto request from ${targetPeer.peerId}`);
           this.sendPeerDTO(dataChannel, targetPeer);
+          // Emit message event for peer_dto request
+          eventEmitter.emit('visualizationEvent', {
+            type: 'message',
+            from: targetPeer.peerId,
+            to: this.peerId,
+            message: 'PeerDTO Request',
+            timestamp: Date.now()
+          });
+        } else {
+          // Emit message event for peer_dto data received
+          eventEmitter.emit('visualizationEvent', {
+            type: 'message',
+            from: targetPeer.peerId,
+            to: this.peerId,
+            message: 'PeerDTO Data',
+            timestamp: Date.now()
+          });
         }
       };
     } else if (label === 'signaling') {
       dataChannel.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
+          // Emit message event for signaling message
+          // eventEmitter.emit('visualizationEvent', {
+          //   type: 'message',
+          //   from: message.from,
+          //   to: message.target,
+          //   message: 'Signaling Message',
+          //   timestamp: Date.now()
+          // });
           this.handleSignalingOverDataChannels(message, targetPeer, dataChannel);
         } catch (error) {
           console.error(`Error parsing signaling message from ${targetPeer.peerId}:`, error);
@@ -567,9 +656,25 @@ class WebRTCPeer {
           const message = JSON.parse(event.data);
           if (message.type === "request") {
             this.connectionManager.shareConnectedPeers(dataChannel, message, userStore);
+            // Emit message event for PEX request
+            eventEmitter.emit('visualizationEvent', {
+              type: 'message',
+              from: targetPeer.peerId,
+              to: this.peerId,
+              message: 'PEX Request',
+              timestamp: Date.now()
+            });
           } else if (message.type === "advertisement") {
             const receivedPeers = message.peers;
             this.connectionManager.handleNewPeers(receivedPeers, dataChannel);
+            // Emit message event for PEX advertisement
+            eventEmitter.emit('visualizationEvent', {
+              type: 'message',
+              from: targetPeer.peerId,
+              to: this.peerId,
+              message: 'PEX Advertisement',
+              timestamp: Date.now()
+            });
           }
         } catch (error) {
           console.error("Error handling PEX request:", error);
@@ -588,6 +693,15 @@ class WebRTCPeer {
       console.log('Sending profile from offer side...');
       const profileData = JSON.stringify({ type: 'profile', profile: this.profile });
       sendData(dataChannel, profileData);
+      // Emit message event for sending profile
+      const targetPeerId = dataChannel.label.split(':')[0];
+      eventEmitter.emit('visualizationEvent', {
+        type: 'message',
+        from: this.peerId,
+        to: targetPeerId,
+        message: 'Profile Data',
+        timestamp: Date.now()
+      });
     } catch (error) {
       console.error('Error while sending profile:', error);
     }
@@ -611,6 +725,14 @@ class WebRTCPeer {
         longitude: this.profile.longitude
       };
       dataChannel.send(JSON.stringify(peerDto));
+      // Emit message event for sending PeerDTO
+      eventEmitter.emit('visualizationEvent', {
+        type: 'message',
+        from: this.peerId,
+        to: targetPeer.peerId,
+        message: 'PeerDTO Data',
+        timestamp: Date.now()
+      });
     } catch (error) {
       console.error(`Error sending PeerDTO to ${targetPeer.peerId}:`, error);
     }
@@ -786,4 +908,4 @@ class WebRTCPeer {
   }
 }
 
-module.exports = { WebRTCPeer };
+module.exports = { WebRTCPeer, eventEmitter };

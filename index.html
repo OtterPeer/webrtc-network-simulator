@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebRTC Peer Visualization</title>
+  <script src="https://unpkg.com/vis-network@9.1.9/dist/vis-network.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background-color: #f0f0f0;
+    }
+    #network {
+      width: 100%;
+      height: 100vh;
+      border: 1px solid #ccc;
+    }
+    #log {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      width: 100%;
+      height: 150px;
+      background-color: rgba(0, 0, 0, 0.8);
+      color: white;
+      overflow-y: auto;
+      padding: 10px;
+      box-sizing: border-box;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div id="network"></div>
+  <div id="log"></div>
+
+  <script>
+    // Initialize Vis.js network
+    const nodes = new vis.DataSet([]);
+    const edges = new vis.DataSet([]);
+    const container = document.getElementById('network');
+    const data = { nodes, edges };
+    const options = {
+      nodes: {
+        shape: 'dot',
+        size: 20,
+        font: { size: 14, color: '#ffffff' },
+        borderWidth: 2,
+        color: { background: '#3498db', border: '#2980b9' }
+      },
+      edges: {
+        width: 2,
+        color: { color: '#848484', highlight: '#ff0000' },
+        arrows: { to: { enabled: false } }
+      },
+      physics: {
+        forceAtlas2Based: {
+          gravitationalConstant: -50,
+          centralGravity: 0.01,
+          springLength: 100,
+          springConstant: 0.08
+        },
+        maxVelocity: 50,
+        solver: 'forceAtlas2Based',
+        timestep: 0.35,
+        stabilization: { iterations: 150 }
+      },
+      interaction: { hover: true }
+    };
+    const network = new vis.Network(container, data, options);
+
+    // Log panel
+    const logDiv = document.getElementById('log');
+    function addLog(message) {
+      const logEntry = document.createElement('div');
+      logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+      logDiv.appendChild(logEntry);
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    // Load initial state from events.json
+    async function loadInitialState() {
+      try {
+        const response = await fetch('events.json');
+        const events = await response.json();
+        events.forEach(event => {
+          if (event.type === 'connection') {
+            const { from, to, state } = event;
+            if (state === 'connected') {
+              if (!nodes.get(from)) {
+                nodes.add({ id: from, label: from.substring(0, 8) });
+              }
+              if (!nodes.get(to)) {
+                nodes.add({ id: to, label: to.substring(0, 8) });
+              }
+              const edgeId = `${from}-${to}`;
+              if (!edges.get(edgeId)) {
+                edges.add({ id: edgeId, from, to });
+              }
+              addLog(`Connection established: ${from.substring(0, 8)} -> ${to.substring(0, 8)}`);
+            } else if (state === 'disconnected') {
+              const edgeId = `${from}-${to}`;
+              if (edges.get(edgeId)) {
+                edges.remove(edgeId);
+              }
+              addLog(`Connection closed: ${from.substring(0, 8)} -> ${to.substring(0, 8)}`);
+            }
+          } else if (event.type === 'message') {
+            const { from, to, message } = event;
+            // Only add nodes if they don't exist (from initial connections)
+            if (!nodes.get(from) || !nodes.get(to)) {
+              if (!nodes.get(from)) nodes.add({ id: from, label: from.substring(0, 8) });
+              if (!nodes.get(to)) nodes.add({ id: to, label: to.substring(0, 8) });
+              const edgeId = `${from}-${to}`;
+              if (!edges.get(edgeId) && nodes.get(from) && nodes.get(to)) {
+                edges.add({ id: edgeId, from, to });
+              }
+            }
+            // Log the message without creating new nodes
+            addLog(`Message: ${from.substring(0, 8)} -> ${to.substring(0, 8)}: ${message}`);
+          }
+        });
+        console.log('Initial state loaded from events.json');
+      } catch (error) {
+        console.error('Error loading initial state:', error);
+        addLog('Failed to load initial state from events.json');
+      }
+    }
+
+    // WebSocket connection
+    const ws = new WebSocket(`ws://${window.location.hostname}:${window.location.port}`);
+    ws.onopen = () => {
+      console.log('Connected to WebSocket server');
+      addLog('Connected to visualization server');
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      console.log('Received Visualization event:', data);
+      handleVisualizationEvent(data);
+    };
+
+    ws.onclose = () => {
+      addLog('Disconnected from visualization server');
+    };
+
+    // Handle visualization events
+    function handleVisualizationEvent(event) {
+      if (event.type === 'connection') {
+        const { from, to, state } = event;
+        if (state === 'connected') {
+          // Add nodes if they don't exist
+          if (!nodes.get(from)) {
+            nodes.add({ id: from, label: from.substring(0, 8) });
+          }
+          if (!nodes.get(to)) {
+            nodes.add({ id: to, label: to.substring(0, 8) });
+          }
+          // Add edge if it doesn't exist
+          const edgeId = `${from}-${to}`;
+          if (!edges.get(edgeId)) {
+            edges.add({ id: edgeId, from, to });
+          }
+          addLog(`Connection established: ${from.substring(0, 8)} -> ${to.substring(0, 8)}`);
+        } else if (state === 'disconnected') {
+          // Remove edge if it exists
+          const edgeId = `${from}-${to}`;
+          if (edges.get(edgeId)) {
+            edges.remove(edgeId);
+          }
+          addLog(`Connection closed: ${from.substring(0, 8)} -> ${to.substring(0, 8)}`);
+        }
+      } else if (event.type === 'message') {
+        const { from, to, message } = event;
+        // Ensure nodes exist (only if not already present from connections)
+        if (!nodes.get(from)) {
+          nodes.add({ id: from, label: from.substring(0, 8) });
+        }
+        if (!nodes.get(to)) {
+          nodes.add({ id: to, label: to.substring(0, 8) });
+        }
+        // Check if edge exists, create if necessary
+        const edgeId = `${from}-${to}`;
+        if (!edges.get(edgeId) && nodes.get(from) && nodes.get(to)) {
+          edges.add({ id: edgeId, from, to });
+        }
+        // Animate message without creating new nodes
+        animateMessage(from, to, message);
+        addLog(`Message: ${from.substring(0, 8)} -> ${to.substring(0, 8)}: ${message}`);
+      }
+    }
+
+    // Animate message exchange
+    function animateMessage(from, to, messageText) {
+      const edgeId = `${from}-${to}`;
+      let edge = edges.get(edgeId);
+      if (!edge) {
+        // Create temporary edge for animation if it doesn't exist
+        edges.add({ id: edgeId, from, to, color: { color: '#ff0000' } });
+        edge = edges.get(edgeId);
+      }
+      // Flash the edge with the message
+      edges.update({ id: edgeId, color: { color: '#ff0000' } });
+      // Optionally add a label to the edge for the message (temporary)
+      edges.update({ id: edgeId, label: messageText, font: { align: 'middle' } });
+      setTimeout(() => {
+        edges.update({ id: edgeId, color: { color: '#848484' }, label: undefined });
+      }, 1000); // Message disappears after 1 second
+      // Flash the target node
+      nodes.update({ id: to, color: { background: '#e74c3c' } });
+      setTimeout(() => {
+        nodes.update({ id: to, color: { background: '#3498db' } });
+      }, 1000); // Node color reverts after 1 second
+    }
+
+    // Load initial state when the page loads
+    window.onload = loadInitialState;
+  </script>
+</body>
+</html>
