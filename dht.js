@@ -18,11 +18,10 @@ class DHT extends EventEmitter {
     this.MAX_RECEIVED_IDS = 10000;
     this.forwardStrategy = new ForwardToAllCloserForwardStrategy();
 
-    // Initialize cache strategy
     this.cacheStrategy = this.createCacheStrategy(
       opts.cacheStrategy || 'distance',
       opts.cacheSize || 1000,
-      opts.cacheDistanceThreshold || Math.pow(2, 40),
+      opts.cacheDistanceThreshold || Math.pow(2, 45), // tested in 50 peers network scenario
       opts.cacheProbability || 0.7
     );
     this.MAX_TTL = 48 * 3600 * 1000; // 48 hours in milliseconds
@@ -34,6 +33,30 @@ class DHT extends EventEmitter {
       this.addNode(node);
       this.tryToDeliverCachedMessagesToTarget();
     });
+    this.rpc.on("visualizationEvent", (event) => this.emit("visualizationEvent", event))
+    this.cacheStrategy.on("messageCached", () => {
+        this.emit("visualizationEvent",
+          {
+            type: 'cache',
+            state: 'added',
+            nodeId: this.nodeId,
+            timestamp: Date.now()
+          }
+        )
+      }
+    )
+
+    this.cacheStrategy.on("emptyCache", () => {
+        this.emit("visualizationEvent",
+          {
+            type: 'cache',
+            state: 'empty',
+            nodeId: this.nodeId,
+            timestamp: Date.now()
+          }
+        )
+      }
+    )
 
     this.loadState();
     this.startTTLCleanup();
@@ -62,7 +85,8 @@ class DHT extends EventEmitter {
     if (!exists) {
       console.log('Adding new node:', node.id);
       this.buckets.add(node);
-      const alive = await this.rpc.ping(node);
+      const alive = true; // don't send ping, other simulators are online
+      // const alive = await this.rpc.ping(node);
       console.log('Received pong:', alive);
       if (alive) {
         this.emit('ready');
@@ -78,25 +102,26 @@ class DHT extends EventEmitter {
   }
 
   async sendMessage(recipient, message) {
+    const sender = message.senderId;
     const targetNodeInBuckets = this.buckets.all().find(node => node.id === recipient);
     if (targetNodeInBuckets) {
       const alive = await this.rpc.ping(targetNodeInBuckets);
       if (alive) {
-        const success = await this.rpc.sendMessage(targetNodeInBuckets, this.nodeId, recipient, message);
+        const success = await this.rpc.sendMessage(targetNodeInBuckets, sender, recipient, message);
         if (success) {
           console.log(`Message ${message.id} delivered to ${recipient}`);
         } else {
           this.cacheMessage(this.nodeId, recipient, message, true);
-          this.forward(this.nodeId, recipient, message, true);
+          this.forward(sender, recipient, message, true);
         }
       } else {
         this.cacheMessage(this.nodeId, recipient, message, true);
-        this.forward(this.nodeId, recipient, message, true);
+        this.forward(sender, recipient, message, true);
       }
     } else {
       console.log(`Routing message ${message.id} through other peers`);
       this.cacheMessage(this.nodeId, recipient, message, false);
-      this.forward(this.nodeId, recipient, message, true);
+      this.forward(sender, recipient, message, false);
     }
   }
 
@@ -105,6 +130,7 @@ class DHT extends EventEmitter {
     if (!sender) {
       sender = this.nodeId;
       originNode = true;
+      console.log(`Sending signaling message over DHT from peer ${this.nodeId} to ${recipient}`)
     }
 
     if (!signalingMessage.id) {
@@ -127,7 +153,7 @@ class DHT extends EventEmitter {
       }
     } else {
       console.log(`Routing signaling message ${signalingMessage.id} through other peers`);
-      this.forward(sender, recipient, signalingMessage, originNode, true);
+      this.forward(sender, recipient, signalingMessage, originNode, false);
     }
   }
 
@@ -148,9 +174,6 @@ class DHT extends EventEmitter {
       console.log(`Forwarding completed for message ${message.id}`);
     }).catch(error => {
       console.error(`Forwarding failed: ${error}`);
-      if ('content' in message) {
-        this.cacheMessage(sender, recipient, message, false);
-      }
     });
   }
 
@@ -159,14 +182,14 @@ class DHT extends EventEmitter {
 
     if (rpcMessage.type === 'message') {
       const { sender, recipient, message } = rpcMessage;
-      if (!sender || !recipient || !message || !message.id) {
+      if (!sender || !recipient || !message || !message.id || !message.senderId) {
         console.warn("Invalid message; dropping.");
         return;
       }
 
       this.addNode(from);
       if (recipient === this.nodeId) {
-        console.log(`Received message ${message.id} for self: ${message.content}`);
+        console.log(`Received message ${message.id} for self: ${message.encryptedMessage}`);
         this.emit("chatMessage", message);
       } else {
         this.sendMessage(recipient, message);
@@ -177,6 +200,8 @@ class DHT extends EventEmitter {
         console.warn("Invalid signaling message; dropping.");
         return;
       }
+
+      console.log(signalingMessage.id);
 
       if (this.receivedSignalingMessageIds.has(signalingMessage.id)) {
         console.log(`Duplicate signaling message ${signalingMessage.id} received; skipping.`);
@@ -223,7 +248,9 @@ class DHT extends EventEmitter {
   async tryToDeliverCachedMessagesToTarget() {
     await this.cacheStrategy.tryToDeliverCachedMessages(
       (targetId) => this.findAndPingNode(targetId),
-      (node, sender, recipient, message) => this.rpc.sendMessage(node, sender, recipient, message),
+      (node, sender, recipient, message) => {
+        return this.rpc.sendMessage(node, sender, recipient, message);
+      },
       this.MAX_TTL
     );
     this.emit("delivered");
@@ -270,7 +297,9 @@ class DHT extends EventEmitter {
     this.ttlCleanupInterval = setInterval(() => {
       this.cacheStrategy.tryToDeliverCachedMessages(
         (targetId) => this.findAndPingNode(targetId),
-        (node, sender, recipient, message) => this.rpc.sendMessage(node, sender, recipient, message),
+        (node, sender, recipient, message) => {
+          return this.rpc.sendMessage(node, sender, recipient, message);
+        },
         this.MAX_TTL
       ).then(() => {
         console.log(`Cleaned up expired messages; ${this.cacheStrategy.getCachedMessageCount()} remain`);

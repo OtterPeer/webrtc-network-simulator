@@ -6,10 +6,9 @@ class WebRTCRPC extends EventEmitter {
   constructor({ nodeId }) {
     super();
     this.id = nodeId;
-    this.dataChannels = new Map(); // Map of nodeId to dht data channel
+    this.dataChannels = new Map();
   }
 
-  // Initialize data channel for DHT communication
   setupDataChannel(node, dataChannel) {
     dataChannel.onmessage = (event) => {
       this.handleMessage(event, node);
@@ -33,7 +32,6 @@ class WebRTCRPC extends EventEmitter {
     return dataChannel;
   }
 
-  // Handle incoming messages
   handleMessage(event, node) {
     try {
       const rpcMessage = JSON.parse(event.data);
@@ -46,11 +44,21 @@ class WebRTCRPC extends EventEmitter {
         if (dataChannel && dataChannel.readyState === 'open') {
           dataChannel.send(JSON.stringify(pongMessage));
         }
+        // todo: visualize pings
         this.emit('ping', node);
       } else if (rpcMessage.type === 'pong') {
         this.emit('message', rpcMessage, node);
       } else if (rpcMessage.type === 'message' || rpcMessage.type === 'signaling') {
-        this.emit('message', rpcMessage, node);
+        if (rpcMessage.type === 'message') {
+          this.emit('visualizationEvent', {
+          type: 'message',
+          from: node.id,
+          to: this.id,
+          message: rpcMessage.message ? rpcMessage.message.encryptedMessage || 'Chat Message' : rpcMessage.signalingMessage ? 'Signaling Message on DHT' : 'Unknown Message',
+          timestamp: Date.now()
+          });
+          this.emit('message', rpcMessage, node);
+        }
       }
     } catch (error) {
       console.error(`Error parsing DHT message from ${node.id}:`, error);
@@ -104,6 +112,7 @@ class WebRTCRPC extends EventEmitter {
         message,
         signalingMessage
       };
+
       dataChannel.send(JSON.stringify(rpcMessage));
       return true;
     } catch (error) {
