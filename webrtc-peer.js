@@ -4,51 +4,7 @@ const crypto = require('crypto');
 const { v4: uuid } = require('uuid');
 const fs = require('fs');
 const path = require('path');
-
-// Types (translated from TypeScript)
-const PeerDTO = {
-  peerId: String,
-  publicKey: String,
-  age: Number,
-  sex: Array,
-  searching: Array,
-  x: Number,
-  y: Number,
-  latitude: Number,
-  longitude: Number
-};
-
-const Profile = {
-  peerId: String,
-  publicKey: String,
-  name: String,
-  profilePic: String,
-  birthDay: Number,
-  birthMonth: Number,
-  birthYear: Number,
-  description: String,
-  sex: Array,
-  interests: Array,
-  searching: Array,
-  latitude: Number,
-  longitude: Number,
-  x: Number,
-  y: Number
-};
-
-const WebSocketMessage = {
-  from: String,
-  target: String,
-  candidate: Object,
-  encryptedOffer: String,
-  encryptedAnswer: String,
-  publicKey: String,
-  encryptedAesKey: String,
-  iv: String,
-  authTag: String,
-  encryptedAesKeySignature: String,
-  keyId: String
-};
+const DHT = require('./dht.js').default;
 
 // In-memory store for user data (replacing userdb)
 const userStore = new Map();
@@ -83,8 +39,6 @@ function derivePeerId(publicKey) {
 
 // Verify public key matches peerId
 async function verifyPublicKey(peerId, publicKey) {
-  console.log(peerId);
-  console.log(publicKey);
   const derivedPeerId = derivePeerId(publicKey);
   if (derivedPeerId !== peerId) {
     throw new Error(`Public key hash (${derivedPeerId}) doesn't match peerId (${peerId})`);
@@ -97,9 +51,9 @@ async function verifyPublicKey(peerId, publicKey) {
 
 // Encrypt AES key with public key
 function encryptAesKey(targetPublicKey, aesKey) {
+  targetPublicKey = targetPublicKey.trim();
   try {
-    // Validate public key format
-    if (!targetPublicKey.startsWith('-----BEGIN PUBLIC KEY-----') || !targetPublicKey.endsWith('-----END PUBLIC KEY-----')) {
+    if (!targetPublicKey.startsWith('-----BEGIN RSA PUBLIC KEY-----') || !targetPublicKey.endsWith('-----END RSA PUBLIC KEY-----')) {
       throw new Error('Invalid public key format');
     }
     return crypto
@@ -317,7 +271,13 @@ async function decryptAnswer(encryptedRTCSessionDescription) {
     const aesKey = senderUser.aesKey;
     const iv = senderUser.iv;
 
+    console.log(aesKey);
+    console.log(encryptedRTCSessionDescription);
+    console.log(iv);
+    console.log(encryptedRTCSessionDescription.authTag);
+
     const decryptedAnswer = decryptAndDecodeMessage(aesKey, iv, encryptedRTCSessionDescription.authTag, encryptedRTCSessionDescription.encryptedAnswer);
+    console.log(decryptedAnswer)
     return { sdp: decryptedAnswer, type: 'answer' };
   } catch (error) {
     console.error(`Error decrypting answer from ${encryptedRTCSessionDescription.from}:`, error);
@@ -357,13 +317,11 @@ function generateInterestsArray() {
   const array = new Array(length).fill(0);
   const indices = Array.from({ length }, (_, i) => i);
   
-  // Shuffle indices and pick the first 5
   for (let i = indices.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [indices[i], indices[j]] = [indices[j], indices[i]];
   }
   
-  // Set 1s at the selected indices
   for (let i = 0; i < numOnes; i++) {
     array[indices[i]] = 1;
   }
@@ -373,7 +331,7 @@ function generateInterestsArray() {
 
 // Helper: Generate random x and y between -1 and 1 with 5 decimal places
 function generateRandomXY() {
-  const x = (Math.random() * 2 - 1).toFixed(5); // Random between -1 and 1
+  const x = (Math.random() * 2 - 1).toFixed(5);
   const y = (Math.random() * 2 - 1).toFixed(5);
   return { x: parseFloat(x), y: parseFloat(y) };
 }
@@ -397,7 +355,6 @@ function getRandomPhotoAsBase64() {
     return `data:${mimeType};base64,${base64Image}`;
   } catch (error) {
     console.error('Error loading random photo:', error);
-    // Fallback to a placeholder URL
     return 'https://example.com/avatar.jpg';
   }
 }
@@ -433,18 +390,18 @@ function sendData(dataChannel, fileData, chunkSize = 16384) {
 class WebRTCPeer {
   constructor(profile, signalingServerURL, token, iceServers) {
     this.profile = profile;
-    this.peerId = derivePeerId(profile.publicKey); // Derive peerId from publicKey
-    this.profile.peerId = derivePeerId(profile.publicKey); // Ensure profile has correct peerId
+    this.peerId = derivePeerId(profile.publicKey);
+    this.profile.peerId = this.peerId;
     this.signalingServerURL = signalingServerURL;
     this.token = token;
     this.iceServers = iceServers;
     this.connections = new Map();
     this.dataChannels = new Map();
     this.socket = null;
+    this.dht = null; // DHT instance for this peer
   }
 
   async init() {
-    // Store private key
     const { publicKey, privateKey } = generateKeyPair();
     this.peerId = derivePeerId(publicKey);
     if (derivePeerId(publicKey) !== this.peerId) {
@@ -452,17 +409,19 @@ class WebRTCPeer {
     }
     this.profile.publicKey = publicKey;
     this.profile.peerId = this.peerId;
-    console.log(this.peerId);
-    console.log(privateKey);
     privateKeyStore.set(this.peerId, privateKey);
 
-    // Initialize user store
     userStore.set(this.peerId, {
       peerId: this.peerId,
       publicKey: this.profile.publicKey
     });
 
-    // Connect to signaling server
+    // Initialize DHT instance for this peer
+    this.dht = new DHT({ nodeId: this.peerId });
+    this.dht.on('ready', () => {
+      console.log(`DHT for peer ${this.peerId} is ready`);
+    });
+
     try {
       this.socket = io(this.signalingServerURL, {
         auth: { token: this.token }
@@ -566,7 +525,6 @@ class WebRTCPeer {
       dataChannel.onmessage = (event) => {
         if (event.data === 'request_profile') {
           console.log(`Received profile request from ${targetPeer.peerId} to peer ${this.peerId}`);
-          console.log(`${this.profile.peerId}, ${this.profile.name}`)
           this.sendProfile(dataChannel);
         }
       };
@@ -586,6 +544,9 @@ class WebRTCPeer {
           console.error(`Error parsing signaling message from ${targetPeer.peerId}:`, error);
         }
       };
+    } else if (label === 'dht') {
+      this.dht.setupDataChannel(targetPeer.peerId, dataChannel);
+      // DHT data channel messages are handled by WebRTCRPC
     }
   }
 
@@ -632,7 +593,6 @@ class WebRTCPeer {
       await verifyPublicKey(targetPeer.peerId, targetPeer.publicKey);
       const peerConnection = this.createPeerConnection(targetPeer);
 
-      // Create data channels
       const signalingDataChannel = peerConnection.createDataChannel('signaling');
       this.setupDataChannel(signalingDataChannel, targetPeer);
 
@@ -641,6 +601,9 @@ class WebRTCPeer {
 
       const peerDtoDataChannel = peerConnection.createDataChannel('peer_dto');
       this.setupDataChannel(peerDtoDataChannel, targetPeer);
+
+      const dhtDataChannel = peerConnection.createDataChannel('dht');
+      this.setupDataChannel(dhtDataChannel, targetPeer);
 
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
@@ -653,6 +616,8 @@ class WebRTCPeer {
         this.profile.publicKey
       );
 
+      // this.dht.addNode({id: this.peerId})
+
       this.socket.emit('messageOne', signalingMessage);
     } catch (error) {
       console.error(`Error initiating connection to ${targetPeer.peerId}:`, error);
@@ -662,7 +627,6 @@ class WebRTCPeer {
   async handleSignalingMessage(message) {
     try {
       if ('encryptedOffer' in message) {
-        console.log(message);
         await this.handleOffer(message, { peerId: message.from, publicKey: message.publicKey });
       } else if ('encryptedAnswer' in message) {
         await this.handleAnswer(message);
@@ -681,7 +645,7 @@ class WebRTCPeer {
       } else {
         const targetConnection = this.connections.get(message.target);
         if (targetConnection) {
-          const targetDataChannel = this.dataChannels.get(`${message.target}:signaling`);
+          const targetDataChannel = this.dataChannels.get(`${message.target}:${this.peerId}:signaling`);
           if (targetDataChannel && targetDataChannel.readyState === 'open') {
             targetDataChannel.send(JSON.stringify(message));
           } else {
@@ -763,6 +727,9 @@ class WebRTCPeer {
 
   disconnect() {
     try {
+      if (this.dht) {
+        this.dht.close();
+      }
       if (this.socket) {
         this.socket.disconnect();
       }
@@ -775,52 +742,6 @@ class WebRTCPeer {
       console.error(`Error disconnecting peer ${this.peerId}:`, error);
     }
   }
-}
-
-// Example usage
-async function main() {
-  const signalingServerURL = 'signaling-sever-url';
-  const token = 'signaling-sever-token';
-  const iceServers = [
-    { urls: 'stun:stun.l.google.com:19302' }
-  ];
-
-  // Generate random x and y values
-  const { x, y } = generateRandomXY();
-
-  // Generate a profile with formatted fields
-  const profile = {
-    publicKey: '', // Will be set in init
-    name: 'Test Peer',
-    profilePic: getRandomPhotoAsBase64(), // Random base64-encoded photo
-    birthDay: 1,
-    birthMonth: 1,
-    birthYear: 1990,
-    description: 'Test peer for WebRTC',
-    sex: generateOneHotArray(3), // [0, 1, 0] or similar
-    interests: generateInterestsArray(), // 46 elements, 5 ones
-    searching: generateOneHotArray(3), // [1, 0, 0] or similar
-    latitude: 0,
-    longitude: 0,
-    x: x,
-    y: y
-  };
-
-  const peer = new WebRTCPeer(profile, signalingServerURL, token, iceServers);
-  await peer.init();
-
-  // Keep the process running
-  process.on('SIGINT', () => {
-    peer.disconnect();
-    process.exit();
-  });
-}
-
-if (require.main === module) {
-  main().catch(error => {
-    console.error('Main error:', error);
-    process.exit(1);
-  });
 }
 
 module.exports = { WebRTCPeer };
