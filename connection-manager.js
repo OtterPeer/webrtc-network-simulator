@@ -3,7 +3,8 @@ class ConnectionManager {
     connections,
     pexDataChannels,
     dht,
-    initiateConnection
+    initiateConnection,
+    userStore
   ) {
     this.minConnections = 3;
     this.checkInterval = 10 * 1000; // 10s for buffer checks
@@ -11,6 +12,7 @@ class ConnectionManager {
     this.pexDataChannels = pexDataChannels; // Map of peerId to RTCDataChannel
     this.dht = dht;
     this.initiateConnection = initiateConnection;
+    this.userStore = userStore; // Store userStore
     this.intervalId = null;
     this.hasTriggeredInitialConnections = false;
   }
@@ -91,7 +93,9 @@ class ConnectionManager {
     }
   }
 
-  async shareConnectedPeers(pexDataChannel, message, userStore) {
+  async shareConnectedPeers(pexDataChannel, message) {
+    // console.log("Sharing peers")
+    // console.log(this.userStore)
     const maxNumberOfPeers = message.maxNumberOfPeers;
     const peersToShare = new Set();
 
@@ -104,7 +108,7 @@ class ConnectionManager {
           }
           const iceConnectionState = this.connections.get(peerId)?.iceConnectionState;
           if (iceConnectionState === "connected" || iceConnectionState === "completed") {
-            const user = userStore.get(peerId);
+            const user = this.userStore.get(peerId);
             const peerDto = this.convertUserToPeerDTO(user);
             if (peerDto) {
               peersToShare.add(peerDto);
@@ -144,7 +148,6 @@ class ConnectionManager {
     };
   }
 
-  // todo: share userstore
 //   async tryToRestoreDHTConnections(peersToConnect) {
 //     try {
 //       const nodesInBuckets = this.dht.getAllNodes();
@@ -157,7 +160,7 @@ class ConnectionManager {
 //         if (peer.id !== nodeId && !this.connections.has(peer.id)) {
 //           const peerDTO = {
 //             peerId: peer.id,
-//             publicKey: userStore.get(peer.id)?.publicKey
+//             publicKey: this.userStore.get(peer.id)?.publicKey
 //           };
 //           if (peerDTO.publicKey) {
 //             console.log(`Attempting connection to peer ${peer.id}`);
@@ -215,19 +218,30 @@ class ConnectionManager {
           !tableOfPeers.includes(peerDto) &&
           !alreadyConnected &&
           peerDto.peerId !== this.dht.nodeId
-        //   !this.blockedPeers.has(peerDto.peerId)
         ) {
           tableOfPeers.push(peerDto);
+          this.userStore.set(peerDto.peerId, {
+            ...this.userStore.get(peerDto.peerId),
+            peerId: peerDto.peerId,
+            publicKey: peerDto.publicKey,
+            age: peerDto.age || 0,
+            sex: peerDto.sex || [0, 0, 0],
+            searching: peerDto.searching || [0, 0, 0],
+            x: peerDto.x || 0,
+            y: peerDto.y || 0,
+            latitude: peerDto.latitude || 0,
+            longitude: peerDto.longitude || 0
+          });
         }
       });
     }
+
+    console.log(this.userStore)
     console.log("New peers received:", tableOfPeers);
     const filteredPeers = tableOfPeers.filter((peer) => this.filterPeer(peer));
     filteredPeers.forEach((peerDto) => {
-    //   this.filteredPeers.add(peerDto);
       this.initiateConnection(peerDto, signalingDataChannel, false);
     });
-    // Connect to peers that are not meant to be displayed just to keep minConnections
     if (this.connections.size < this.minConnections) {
       const peersNeeded = this.minConnections - this.connections.size;
       const unconnectedPeers = tableOfPeers.filter(

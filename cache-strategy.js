@@ -174,7 +174,7 @@ class DistanceBasedProbabilisticCacheStrategy extends CacheStrategy {
     };
     this.cachedMessages.set(message.id, queued);
     this.accessOrder.push(message.id);
-    this.emit('cache');
+    this.emit('messageCached');
     console.log(`Cached message ${message.id} for ${recipient} with probability ${this.cacheProbability}`);
   }
 
@@ -211,6 +211,10 @@ class DistanceBasedProbabilisticCacheStrategy extends CacheStrategy {
       this.cachedMessages.delete(id);
       this.accessOrder = this.accessOrder.filter(aid => aid !== id);
     });
+
+    if (this.cachedMessages.size === 0) {
+      this.emit('emptyCache')
+    }
 
     this.emit('delivered');
   }
