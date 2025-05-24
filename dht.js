@@ -2,7 +2,9 @@ const EventEmitter = require('events');
 const WebRTCRPC = require('./webrtc-rpc.js').default;
 const KBucket = require('./kbucket.js').default;
 const { ForwardToAllCloserForwardStrategy } = require('./forward-strategy.js');
+const { DistanceBasedCacheStrategy, DistanceBasedProbabilisticCacheStrategy } = require('./cache-strategy.js');
 const { v4: uuid } = require('uuid');
+const fs = require('fs').promises;
 
 class DHT extends EventEmitter {
   constructor(opts) {
@@ -13,15 +15,42 @@ class DHT extends EventEmitter {
     this.k = opts.k || 20;
     this.forwardedMessagesIds = new Set();
     this.receivedSignalingMessageIds = new Set();
-    this.MAX_RECEIVED_IDS = 10000; // Maximum number of signaling message IDs to store
+    this.MAX_RECEIVED_IDS = 10000;
     this.forwardStrategy = new ForwardToAllCloserForwardStrategy();
-    this.forwardedMessages = new Map();
+
+    // Initialize cache strategy
+    this.cacheStrategy = this.createCacheStrategy(
+      opts.cacheStrategy || 'distance',
+      opts.cacheSize || 1000,
+      opts.cacheDistanceThreshold || Math.pow(2, 40),
+      opts.cacheProbability || 0.7
+    );
+    this.MAX_TTL = 48 * 3600 * 1000; // 48 hours in milliseconds
+    this.ttlCleanupInterval = null;
 
     this.rpc.on("ping", (node) => this.addNode(node));
     this.rpc.on("message", this.handleMessage.bind(this));
-    this.rpc.on("listening", (node) => this.addNode(node));
+    this.rpc.on("listening", (node) => {
+      this.addNode(node);
+      this.tryToDeliverCachedMessagesToTarget();
+    });
 
+    this.loadState();
+    this.startTTLCleanup();
     this.startReceivedIdsCleanup();
+
+    if (opts.bootstrapNodeId) this.bootstrap({ id: opts.bootstrapNodeId });
+  }
+
+  createCacheStrategy(name, cacheSize, distanceThreshold, cacheProbability) {
+    switch (name.toLowerCase()) {
+      case 'distance':
+        return new DistanceBasedCacheStrategy(cacheSize, distanceThreshold);
+      case 'distance_probabilistic':
+        return new DistanceBasedProbabilisticCacheStrategy(cacheSize, distanceThreshold, cacheProbability);
+      default:
+        throw new Error(`Unknown cache strategy: ${name}`);
+    }
   }
 
   async addNode(node) {
@@ -29,10 +58,11 @@ class DHT extends EventEmitter {
     if (!exists) {
       console.log('Adding new node:', node.id);
       this.buckets.add(node);
-      const alive = await this.rpc.ping(node); // Await the ping result (true if pong received)
+      const alive = await this.rpc.ping(node);
       console.log('Received pong:', alive);
       if (alive) {
         this.emit('ready');
+        this.tryToDeliverCachedMessagesToTarget();
       }
     } else {
       console.log('Node already exists:', node.id);
@@ -46,20 +76,22 @@ class DHT extends EventEmitter {
   async sendMessage(recipient, message) {
     const targetNodeInBuckets = this.buckets.all().find(node => node.id === recipient);
     if (targetNodeInBuckets) {
-      const alive = await this.rpc.ping(targetNodeInBuckets); // Await ping to ensure node is alive
+      const alive = await this.rpc.ping(targetNodeInBuckets);
       if (alive) {
         const success = await this.rpc.sendMessage(targetNodeInBuckets, this.nodeId, recipient, message);
         if (success) {
           console.log(`Message ${message.id} delivered to ${recipient}`);
         } else {
+          this.cacheMessage(this.nodeId, recipient, message, true);
           this.forward(this.nodeId, recipient, message, true);
         }
       } else {
-        console.log(`Node ${recipient} did not respond to ping; forwarding message`);
+        this.cacheMessage(this.nodeId, recipient, message, true);
         this.forward(this.nodeId, recipient, message, true);
       }
     } else {
       console.log(`Routing message ${message.id} through other peers`);
+      this.cacheMessage(this.nodeId, recipient, message, false);
       this.forward(this.nodeId, recipient, message, true);
     }
   }
@@ -71,7 +103,6 @@ class DHT extends EventEmitter {
       originNode = true;
     }
 
-    // Assign an ID for deduplication if none exists
     if (!signalingMessage.id) {
       signalingMessage.id = uuid();
     }
@@ -88,7 +119,6 @@ class DHT extends EventEmitter {
           this.forward(sender, recipient, signalingMessage, originNode, true);
         }
       } else {
-        console.log(`Node ${recipient} did not respond to ping; forwarding signaling message`);
         this.forward(sender, recipient, signalingMessage, originNode, true);
       }
     } else {
@@ -114,6 +144,9 @@ class DHT extends EventEmitter {
       console.log(`Forwarding completed for message ${message.id}`);
     }).catch(error => {
       console.error(`Forwarding failed: ${error}`);
+      if ('content' in message) {
+        this.cacheMessage(sender, recipient, message, false);
+      }
     });
   }
 
@@ -141,13 +174,11 @@ class DHT extends EventEmitter {
         return;
       }
 
-      // Check for duplicate signaling message
       if (this.receivedSignalingMessageIds.has(signalingMessage.id)) {
         console.log(`Duplicate signaling message ${signalingMessage.id} received; skipping.`);
         return;
       }
 
-      // Add to received IDs and clean up if necessary
       this.receivedSignalingMessageIds.add(signalingMessage.id);
       if (this.receivedSignalingMessageIds.size > this.MAX_RECEIVED_IDS) {
         this.cleanupReceivedSignalingMessageIds();
@@ -177,12 +208,103 @@ class DHT extends EventEmitter {
   startReceivedIdsCleanup() {
     setInterval(() => {
       this.cleanupReceivedSignalingMessageIds();
-    }, 5 * 60 * 1000); // Clean up every 5 minutes
+    }, 5 * 60 * 1000);
+  }
+
+  cacheMessage(sender, recipient, message, recipientFoundInBuckets) {
+    this.cacheStrategy.cacheMessage(sender, recipient, message, this.nodeId, recipientFoundInBuckets);
+    this.emit("cache", { sender, recipient, message });
+  }
+
+  async tryToDeliverCachedMessagesToTarget() {
+    await this.cacheStrategy.tryToDeliverCachedMessages(
+      (targetId) => this.findAndPingNode(targetId),
+      (node, sender, recipient, message) => this.rpc.sendMessage(node, sender, recipient, message),
+      this.MAX_TTL
+    );
+    this.emit("delivered");
+  }
+
+  async saveState() {
+    try {
+      const messagesArray = Array.from(this.cacheStrategy.getCachedMessages());
+      await fs.writeFile(`dht_${this.nodeId}_cachedMessages.json`, JSON.stringify(messagesArray));
+
+      const nodes = this.buckets.all().map(node => ({ id: node.id }));
+      await fs.writeFile(`dht_${this.nodeId}_kBucket.json`, JSON.stringify(nodes));
+    } catch (error) {
+      console.error(`Error saving state for node ${this.nodeId}:`, error);
+      throw error;
+    }
+  }
+
+  async loadState() {
+    try {
+      const cachedMessages = await fs.readFile(`dht_${this.nodeId}_cachedMessages.json`, 'utf8').catch(() => null);
+      if (cachedMessages) {
+        const messagesArray = JSON.parse(cachedMessages);
+        this.cacheStrategy.addCachedMessages(new Map(messagesArray));
+      }
+
+      const nodesJson = await fs.readFile(`dht_${this.nodeId}_kBucket.json`, 'utf8').catch(() => null);
+      if (nodesJson) {
+        const nodes = JSON.parse(nodesJson);
+        for (const node of nodes) {
+          this.buckets.add({ id: node.id });
+        }
+      }
+      console.log("Loaded DHT state:");
+      console.log(this.cacheStrategy.getCachedMessages());
+      console.log(this.buckets);
+    } catch (error) {
+      console.error(`Error loading state for node ${this.nodeId}:`, error);
+      throw error;
+    }
+  }
+
+  startTTLCleanup() {
+    this.ttlCleanupInterval = setInterval(() => {
+      this.cacheStrategy.tryToDeliverCachedMessages(
+        (targetId) => this.findAndPingNode(targetId),
+        (node, sender, recipient, message) => this.rpc.sendMessage(node, sender, recipient, message),
+        this.MAX_TTL
+      ).then(() => {
+        console.log(`Cleaned up expired messages; ${this.cacheStrategy.getCachedMessageCount()} remain`);
+      });
+    }, 5 * 60 * 1000);
+  }
+
+  stopTTLCleanup() {
+    if (this.ttlCleanupInterval) {
+      clearInterval(this.ttlCleanupInterval);
+      this.ttlCleanupInterval = null;
+    }
+  }
+
+  async findAndPingNode(targetId) {
+    const closest = this.buckets.closest(targetId, this.k);
+    for (const node of closest) {
+      if (node.id === targetId) {
+        const alive = await this.rpc.ping(node);
+        if (alive) return node;
+      }
+    }
+    console.log("Node not found in buckets or didn't respond to ping");
+    return null;
+  }
+
+  async bootstrap(bootstrapNode) {
+    console.log("Adding bootstrap node...");
+    await this.addNode(bootstrapNode);
+    const alive = await this.rpc.ping(bootstrapNode);
+    if (alive) this.emit("ready");
   }
 
   close() {
+    this.stopTTLCleanup();
     this.rpc.close();
     this.receivedSignalingMessageIds.clear();
+    this.cacheStrategy.clear();
   }
 }
 

@@ -59,7 +59,7 @@ class ForwardToAllCloserForwardStrategy {
       if (!forwarded) {
         console.log(`No peers available to forward message; skipping cache since caching is not implemented`);
       } else {
-        console.log(`Message forwarded`);
+        // console.log(`Message forwarded`);
       }
     } catch (error) {
       console.error(`Error forwarding message: ${error}`);
