@@ -5,7 +5,7 @@ const { v4: uuid } = require('uuid');
 const fs = require('fs');
 const path = require('path');
 const DHT = require('./dht.js').default;
-
+const ConnectionManager = require('./connection-manager.js').ConnectionManager;
 // In-memory store for user data (replacing userdb)
 const userStore = new Map();
 
@@ -253,7 +253,8 @@ async function encryptAnswer(senderId, targetId, sessionDescription, senderPubli
       target: targetId,
       encryptedAnswer: encryptedMessage,
       authTag,
-      publicKey: senderPublicKey
+      publicKey: senderPublicKey,
+      keyId: user.keyId
     };
   } catch (error) {
     console.error(`Error encrypting answer for target ${targetId}:`, error);
@@ -265,22 +266,18 @@ async function encryptAnswer(senderId, targetId, sessionDescription, senderPubli
 async function decryptAnswer(encryptedRTCSessionDescription) {
   try {
     const senderUser = userStore.get(encryptedRTCSessionDescription.from);
+    // console.log(senderUser)
+    // console.log(encryptedRTCSessionDescription)
     if (!senderUser || !senderUser.aesKey || !senderUser.iv) {
       throw new Error(`No AES key or IV found for peer ${encryptedRTCSessionDescription.from}`);
     }
     const aesKey = senderUser.aesKey;
     const iv = senderUser.iv;
 
-    console.log(aesKey);
-    console.log(encryptedRTCSessionDescription);
-    console.log(iv);
-    console.log(encryptedRTCSessionDescription.authTag);
-
     const decryptedAnswer = decryptAndDecodeMessage(aesKey, iv, encryptedRTCSessionDescription.authTag, encryptedRTCSessionDescription.encryptedAnswer);
-    console.log(decryptedAnswer)
     return { sdp: decryptedAnswer, type: 'answer' };
   } catch (error) {
-    console.error(`Error decrypting answer from ${encryptedRTCSessionDescription.from}:`, error);
+    // console.error(`Error decrypting answer from ${encryptedRTCSessionDescription.from}:`, error); // keyId mismatch - can be ignored, peers will connect on second try
     throw error;
   }
 }
@@ -398,7 +395,8 @@ class WebRTCPeer {
     this.connections = new Map();
     this.dataChannels = new Map();
     this.socket = null;
-    this.dht = null; // DHT instance for this peer
+    this.dht = null;
+    this.connectionManager = null;
   }
 
   async init() {
@@ -421,6 +419,15 @@ class WebRTCPeer {
     this.dht.on('ready', () => {
       console.log(`DHT for peer ${this.peerId} is ready`);
     });
+
+    // Initialize ConnectionManager
+    this.connectionManager = new ConnectionManager(
+      this.connections,
+      this.dataChannels,
+      this.dht,
+      (targetPeer, signalingDataChannel, useDHTForSignaling) => this.initiateConnection(targetPeer, signalingDataChannel, useDHTForSignaling)
+    );
+    this.connectionManager.start();
 
     try {
       this.socket = io(this.signalingServerURL, {
@@ -448,7 +455,11 @@ class WebRTCPeer {
 
       this.socket.on('message', (message) => {
         if (message.target === this.peerId) {
-          this.handleSignalingMessage(message);
+          if (message.payload && message.payload.connections) {
+            this.connectionManager.handleNewPeers(message.payload.connections, null);
+          } else {
+            this.handleSignalingMessage(message);
+          }
         }
       });
 
@@ -472,12 +483,16 @@ class WebRTCPeer {
             from: this.peerId,
             candidate: event.candidate
           };
-          this.socket.emit('messageOne', iceCandidateMessage);
+          if (targetPeer.useDHTForSignaling) {
+            this.dht.sendSignalingMessage(targetPeer.peerId, iceCandidateMessage);
+          } else {
+            this.socket.emit('messageOne', iceCandidateMessage);
+          }
         }
       };
 
       peerConnection.oniceconnectionstatechange = () => {
-        console.log(`Peer ${targetPeer.peerId} ICE state: ${peerConnection.iceConnectionState}`);
+        console.log(`I'm peer ${this.peerId}. Connection state with peer: ${targetPeer.peerId} ICE state: ${peerConnection.iceConnectionState}`);
         if (peerConnection.iceConnectionState === 'disconnected' || peerConnection.iceConnectionState === 'failed' || peerConnection.iceConnectionState === 'closed') {
           this.closeConnection(targetPeer.peerId);
         }
@@ -546,7 +561,20 @@ class WebRTCPeer {
       };
     } else if (label === 'dht') {
       this.dht.setupDataChannel(targetPeer.peerId, dataChannel);
-      // DHT data channel messages are handled by WebRTCRPC
+    } else if (label === 'pex') {
+      dataChannel.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+          if (message.type === "request") {
+            this.connectionManager.shareConnectedPeers(dataChannel, message, userStore);
+          } else if (message.type === "advertisement") {
+            const receivedPeers = message.peers;
+            this.connectionManager.handleNewPeers(receivedPeers, dataChannel);
+          }
+        } catch (error) {
+          console.error("Error handling PEX request:", error);
+        }
+      };
     }
   }
 
@@ -588,13 +616,17 @@ class WebRTCPeer {
     }
   }
 
-  async initiateConnection(targetPeer) {
+  async initiateConnection(targetPeer, signalingDataChannel = null, useDHTForSignaling = false) {
+    if (targetPeer.peerId === this.peerId) {
+      return;
+    }
     try {
+      targetPeer.useDHTForSignaling = useDHTForSignaling;
       await verifyPublicKey(targetPeer.peerId, targetPeer.publicKey);
       const peerConnection = this.createPeerConnection(targetPeer);
 
-      const signalingDataChannel = peerConnection.createDataChannel('signaling');
-      this.setupDataChannel(signalingDataChannel, targetPeer);
+      const signalingDataChannelWithTargetPeer = peerConnection.createDataChannel('signaling');
+      this.setupDataChannel(signalingDataChannelWithTargetPeer, targetPeer);
 
       const profileDataChannel = peerConnection.createDataChannel('profile');
       this.setupDataChannel(profileDataChannel, targetPeer);
@@ -604,6 +636,9 @@ class WebRTCPeer {
 
       const dhtDataChannel = peerConnection.createDataChannel('dht');
       this.setupDataChannel(dhtDataChannel, targetPeer);
+
+      const pexDataChannel = peerConnection.createDataChannel('pex');
+      this.setupDataChannel(pexDataChannel, targetPeer);
 
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
@@ -616,9 +651,13 @@ class WebRTCPeer {
         this.profile.publicKey
       );
 
-      // this.dht.addNode({id: this.peerId})
-
-      this.socket.emit('messageOne', signalingMessage);
+      if (useDHTForSignaling) {
+        this.dht.sendSignalingMessage(targetPeer.peerId, signalingMessage);
+      } else if (signalingDataChannel) {
+        signalingDataChannel.send(JSON.stringify(signalingMessage));
+      } else {
+        this.socket.emit('messageOne', signalingMessage);
+      }
     } catch (error) {
       console.error(`Error initiating connection to ${targetPeer.peerId}:`, error);
     }
@@ -634,7 +673,7 @@ class WebRTCPeer {
         await this.handleIceCandidate(message);
       }
     } catch (error) {
-      console.error(`Error handling signaling message from ${message.from}:`, error);
+      // console.error(`Error handling signaling message from ${message.from}:`, error);
     }
   }
 
@@ -692,7 +731,7 @@ class WebRTCPeer {
       const decryptedAnswer = await decryptAnswer(message);
       await peerConnection.setRemoteDescription(decryptedAnswer);
     } catch (error) {
-      console.error(`Error handling answer from ${message.from}:`, error);
+      // console.error(`Error handling answer from ${message.from}:`, error);
     }
   }
 
@@ -732,6 +771,9 @@ class WebRTCPeer {
       }
       if (this.socket) {
         this.socket.disconnect();
+      }
+      if (this.connectionManager) {
+        this.connectionManager.stop();
       }
       for (const peerConnection of this.connections.values()) {
         peerConnection.close();

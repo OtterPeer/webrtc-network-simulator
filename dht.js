@@ -42,6 +42,10 @@ class DHT extends EventEmitter {
     if (opts.bootstrapNodeId) this.bootstrap({ id: opts.bootstrapNodeId });
   }
 
+  sortClosestToSelf(peerIds) {
+    return this.buckets.sortClosestToSelf(peerIds);
+  }
+
   createCacheStrategy(name, cacheSize, distanceThreshold, cacheProbability) {
     switch (name.toLowerCase()) {
       case 'distance':
