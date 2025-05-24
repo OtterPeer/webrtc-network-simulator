@@ -1,5 +1,4 @@
 const WebRTCPeer = require('./webrtc-peer.js').WebRTCPeer;
-const ConnectionManager = require('./connection-manager.js').ConnectionManager;
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
@@ -35,38 +34,10 @@ async function runMultiplePeers(numPeers) {
     await peer.init();
     peers.push({ id: peer.peerId, publicKey: peer.profile.publicKey, peerId: peer.peerId });
     peerInstances.push(peer);
+
+    await delay(200);
   }
 
-  // Setup ConnectionManager for each peer
-  const connectionsRef = new Map();
-  const pexDataChannelsRef = new Map();
-  const profilesToDisplayRef = { current: [] };
-  const displayedPeersRef = new Set();
-  const currentSwiperIndexRef = { current: 0 };
-  const blockedPeersRef = { current: new Set() };
-  const setPeers = (peers) => console.log("Updated peers:", peers);
-  const initiateConnection = async (peer, targetPeer) => {
-    await peer.initiateConnection(targetPeer);
-  };
-  const notifyProfilesChange = () => console.log("Profiles changed");
-
-  peerInstances.forEach((peerInstance, index) => {
-    const connectionManager = new ConnectionManager(
-      connectionsRef,
-      pexDataChannelsRef,
-      peerInstance.dht,
-      { current: {} },
-      profilesToDisplayRef,
-      displayedPeersRef,
-      currentSwiperIndexRef,
-      blockedPeersRef,
-      setPeers,
-      (targetPeer) => initiateConnection(peerInstance, targetPeer),
-      notifyProfilesChange
-    );
-    const otherPeers = peers.filter(p => p.id !== peerInstance.peerId);
-    connectionManager.handleNewPeers(otherPeers);
-  });
 
   // Simulate message passing (peer1 sends messages to peer2 and peer3)
   setTimeout(() => {
@@ -150,3 +121,5 @@ runMultiplePeers(numPeers).then(peerInstances => {
   console.error('Error running multiple peers:', error);
   process.exit(1);
 });
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
