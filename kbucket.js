@@ -13,6 +13,15 @@ class KBucket {
     return result.toString("hex");
   }
 
+  sortClosestToSelf(peerIds) {
+    const distances = peerIds.map((peerId) => ({
+      peerId,
+      distance: KBucket.xorDistance(this.localId, peerId),
+    }));
+    distances.sort((a, b) => a.distance.localeCompare(b.distance)); // Hex string comparison
+    return distances.map((d) => d.peerId);
+  }
+
   add(node) {
     if (node.id === this.localId) return;
     const distance = KBucket.xorDistance(this.localId, node.id);

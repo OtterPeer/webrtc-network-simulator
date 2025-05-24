@@ -40,7 +40,7 @@ class ForwardToAllCloserForwardStrategy {
     try {
       for (const node of peersToForward) {
         emit("sent", { sender, recipient, content: message });
-        const isSignaling = !message.content; // If there's no 'content', it's a signaling message
+        const isSignaling = !message.encryptedMessage; // If there's no 'content', it's a signaling message
         await rpc.sendMessage(
           node,
           sender,
