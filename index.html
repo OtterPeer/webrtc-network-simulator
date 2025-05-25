@@ -82,7 +82,7 @@
     // Load initial state from events.json
     async function loadInitialState() {
       try {
-        const response = await fetch('events.json');
+        const response = await fetch('/events.json');
         const events = await response.json();
         events.forEach(event => {
           if (event.type === 'connection') {
@@ -203,9 +203,9 @@
       // Flash the edge with the message
       edges.update({ id: edgeId, color: { color: '#ff0000' } });
       // Optionally add a label to the edge for the message (temporary)
-      edges.update({ id: edgeId, label: messageText, font: { align: 'middle' } });
+      // edges.update({ id: edgeId, label: messageText, font: { align: 'middle' } });
       setTimeout(() => {
-        edges.update({ id: edgeId, color: { color: '#848484' }, label: undefined });
+        edges.update({ id: edgeId, label: " ", font: { align: 'middle' }, color: { color: '#848484' }});
       }, 1000); // Message disappears after 1 second
       // Flash the target node
       nodes.update({ id: to, color: { background: '#e74c3c' } });

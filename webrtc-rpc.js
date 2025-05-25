@@ -46,10 +46,19 @@ class WebRTCRPC extends EventEmitter {
         if (dataChannel && dataChannel.readyState === 'open') {
           dataChannel.send(JSON.stringify(pongMessage));
         }
+        // todo: visualize pings
         this.emit('ping', node);
       } else if (rpcMessage.type === 'pong') {
         this.emit('message', rpcMessage, node);
       } else if (rpcMessage.type === 'message' || rpcMessage.type === 'signaling') {
+        // Emit visualization event when the message is received
+        this.emit('visualizationEvent', {
+          type: 'message',
+          from: node.id, // sender
+          to: this.id, // The current node is the recipient
+          message: rpcMessage.message ? rpcMessage.message.encryptedMessage || 'Chat Message' : rpcMessage.signalingMessage ? 'Signaling Message' : 'Unknown Message',
+          timestamp: Date.now()
+        });
         this.emit('message', rpcMessage, node);
       }
     } catch (error) {
@@ -104,6 +113,7 @@ class WebRTCRPC extends EventEmitter {
         message,
         signalingMessage
       };
+
       dataChannel.send(JSON.stringify(rpcMessage));
       return true;
     } catch (error) {

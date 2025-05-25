@@ -95,6 +95,7 @@ class ConnectionManager {
     const maxNumberOfPeers = message.maxNumberOfPeers;
     const peersToShare = new Set();
 
+    console.log(userStore);
     try {
       if (this.connections.size !== 0) {
         let count = 0;

@@ -16,7 +16,6 @@ async function runMultiplePeers(numPeers) {
 
   // Create peers with profiles
   for (let i = 0; i < numPeers; i++) {
-    await delay(3000);
     const { x, y } = generateRandomXY();
     const profile = {
       publicKey: '',
@@ -38,20 +37,19 @@ async function runMultiplePeers(numPeers) {
     await peer.init();
     peers.push({ id: peer.peerId, publicKey: peer.profile.publicKey, peerId: peer.peerId });
     peerInstances.push(peer);
-
-    await delay(200);
+    await delay(300);
   }
 
   // Simulate message passing (peer1 sends messages to peer2 and peer3)
   setTimeout(() => {
     if (peerInstances[0] && peers[1]) {
-      peerInstances[0].dht.sendMessage(peers[1].id, { id: "msg1", content: `Hello from ${peers[0].id} to ${peers[1].id}` });
+      peerInstances[0].dht.sendMessage(peers[1].id, { id: "msg1", senderId: peers[0].id, encryptedMessage: `Hello from ${peers[0].id} to ${peers[1].id}` });
     }
   }, 5000);
 
   setTimeout(() => {
     if (peerInstances[0] && peers[2]) {
-      peerInstances[0].dht.sendMessage(peers[2].id, { id: "msg2", content: `Hello from ${peers[0].id} to ${peers[2].id}` });
+      peerInstances[0].dht.sendMessage(peers[2].id, { id: "msg2", senderId: peers[0].id, encryptedMessage: `Hello from ${peers[0].id} to ${peers[2].id}` });
     }
   }, 10000);
 

@@ -34,6 +34,7 @@ class DHT extends EventEmitter {
       this.addNode(node);
       this.tryToDeliverCachedMessagesToTarget();
     });
+    this.rpc.on("visualizationEvent", (event) => this.emit("visualizationEvent", event))
 
     this.loadState();
     this.startTTLCleanup();
@@ -78,34 +79,26 @@ class DHT extends EventEmitter {
   }
 
   async sendMessage(recipient, message) {
-    // Emit message event for sending
-    this.emit('visualizationEvent', {
-      type: 'message',
-      from: this.nodeId,
-      to: recipient,
-      message: message.content || 'Chat Message',
-      timestamp: Date.now()
-    });
-
+    const sender = message.senderId;
     const targetNodeInBuckets = this.buckets.all().find(node => node.id === recipient);
     if (targetNodeInBuckets) {
       const alive = await this.rpc.ping(targetNodeInBuckets);
       if (alive) {
-        const success = await this.rpc.sendMessage(targetNodeInBuckets, this.nodeId, recipient, message);
+        const success = await this.rpc.sendMessage(targetNodeInBuckets, sender, recipient, message);
         if (success) {
           console.log(`Message ${message.id} delivered to ${recipient}`);
         } else {
           this.cacheMessage(this.nodeId, recipient, message, true);
-          this.forward(this.nodeId, recipient, message, true);
+          this.forward(sender, recipient, message, true);
         }
       } else {
         this.cacheMessage(this.nodeId, recipient, message, true);
-        this.forward(this.nodeId, recipient, message, true);
+        this.forward(sender, recipient, message, true);
       }
     } else {
       console.log(`Routing message ${message.id} through other peers`);
       this.cacheMessage(this.nodeId, recipient, message, false);
-      this.forward(this.nodeId, recipient, message, true);
+      this.forward(sender, recipient, message, false);
     }
   }
 
@@ -119,7 +112,7 @@ class DHT extends EventEmitter {
     if (!signalingMessage.id) {
       signalingMessage.id = uuid();
     }
-    
+
     const targetNodeInBuckets = this.buckets.all().find(node => node.id === recipient);
     if (targetNodeInBuckets) {
       const alive = await this.rpc.ping(targetNodeInBuckets);
@@ -136,7 +129,7 @@ class DHT extends EventEmitter {
       }
     } else {
       console.log(`Routing signaling message ${signalingMessage.id} through other peers`);
-      this.forward(sender, recipient, signalingMessage, originNode, true);
+      this.forward(sender, recipient, signalingMessage, originNode, false);
     }
   }
 
@@ -157,9 +150,6 @@ class DHT extends EventEmitter {
       console.log(`Forwarding completed for message ${message.id}`);
     }).catch(error => {
       console.error(`Forwarding failed: ${error}`);
-      if ('content' in message) {
-        this.cacheMessage(sender, recipient, message, false);
-      }
     });
   }
 
@@ -168,7 +158,7 @@ class DHT extends EventEmitter {
 
     if (rpcMessage.type === 'message') {
       const { sender, recipient, message } = rpcMessage;
-      if (!sender || !recipient || !message || !message.id) {
+      if (!sender || !recipient || !message || !message.id || !message.senderId) {
         console.warn("Invalid message; dropping.");
         return;
       }
@@ -186,6 +176,8 @@ class DHT extends EventEmitter {
         console.warn("Invalid signaling message; dropping.");
         return;
       }
+
+      console.log(signalingMessage.id);
 
       if (this.receivedSignalingMessageIds.has(signalingMessage.id)) {
         console.log(`Duplicate signaling message ${signalingMessage.id} received; skipping.`);
@@ -233,14 +225,6 @@ class DHT extends EventEmitter {
     await this.cacheStrategy.tryToDeliverCachedMessages(
       (targetId) => this.findAndPingNode(targetId),
       (node, sender, recipient, message) => {
-        // Emit message event for cached message delivery attempt
-        this.emit('visualizationEvent', {
-          type: 'message',
-          from: sender,
-          to: recipient,
-          message: 'Cached Message Delivery',
-          timestamp: Date.now()
-        });
         return this.rpc.sendMessage(node, sender, recipient, message);
       },
       this.MAX_TTL
@@ -290,14 +274,6 @@ class DHT extends EventEmitter {
       this.cacheStrategy.tryToDeliverCachedMessages(
         (targetId) => this.findAndPingNode(targetId),
         (node, sender, recipient, message) => {
-          // Emit message event for cached message delivery attempt during cleanup
-          this.emit('visualizationEvent', {
-            type: 'message',
-            from: sender,
-            to: recipient,
-            message: 'Cached Message Delivery (Cleanup)',
-            timestamp: Date.now()
-          });
           return this.rpc.sendMessage(node, sender, recipient, message);
         },
         this.MAX_TTL

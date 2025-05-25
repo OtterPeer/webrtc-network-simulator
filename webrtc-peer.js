@@ -179,6 +179,7 @@ async function encryptAndSignOffer(senderId, targetId, sessionDescription, targe
       iv = crypto.randomBytes(12).toString('base64');
       keyId = uuid();
       userStore.set(targetId, {
+        ...userStore.get(targetId),
         peerId: targetId,
         publicKey: targetPublicKey,
         aesKey,
@@ -225,6 +226,7 @@ async function verifyAndDecryptOffer(encryptedPayload, senderPublicKey, selfPeer
       verifySignature(encryptedAesKey, senderPublicKey, encryptedAesKeySignature);
       aesKey = await decryptAESKey(encryptedAesKey, selfPeerId);
       userStore.set(from, {
+        ...userStore.get(from),
         peerId: from,
         publicKey: senderPublicKey,
         aesKey,
@@ -416,8 +418,16 @@ class WebRTCPeer {
     privateKeyStore.set(this.peerId, privateKey);
 
     userStore.set(this.peerId, {
+      ...userStore.get(this.peerId),
       peerId: this.peerId,
-      publicKey: this.profile.publicKey
+      publicKey: this.profile.publicKey,
+      x: this.profile.x,
+      y: this.profile.y,
+      sex: this.profile.sex,
+      searching: this.profile.searching,
+      age: calculateAge(this.profile.birthDay, this.profile.birthMonth, this.profile.birthYear),
+      latitude: this.profile.latitude,
+      longitude: this.profile.longitude
     });
 
     // Initialize DHT instance for this peer
@@ -426,28 +436,7 @@ class WebRTCPeer {
       console.log(`DHT for peer ${this.peerId} is ready`);
     });
 
-    // Add DHT event listeners for visualization
-    this.dht.on('chatMessage', (message) => {
-      console.log(`DHT chatMessage event: ${JSON.stringify(message)}`);
-      eventEmitter.emit('visualizationEvent', {
-        type: 'message',
-        from: message.from || 'unknown',
-        to: this.peerId,
-        message: message.content || 'Chat Message',
-        timestamp: Date.now()
-      });
-    });
-
-    // this.dht.on('signalingMessage', (signalingMessage) => {
-    //   console.log(`DHT signalingMessage event: ${JSON.stringify(signalingMessage)}`);
-    //   eventEmitter.emit('visualizationEvent', {
-    //     type: 'message',
-    //     from: signalingMessage.from,
-    //     to: signalingMessage.target,
-    //     message: 'Signaling Message',
-    //     timestamp: Date.now()
-    //   });
-    // });
+    this.dht.on("visualizationEvent", (event) => eventEmitter.emit("visualizationEvent", event))
 
     // Initialize ConnectionManager
     this.connectionManager = new ConnectionManager(
@@ -635,14 +624,6 @@ class WebRTCPeer {
       dataChannel.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          // Emit message event for signaling message
-          // eventEmitter.emit('visualizationEvent', {
-          //   type: 'message',
-          //   from: message.from,
-          //   to: message.target,
-          //   message: 'Signaling Message',
-          //   timestamp: Date.now()
-          // });
           this.handleSignalingOverDataChannels(message, targetPeer, dataChannel);
         } catch (error) {
           console.error(`Error parsing signaling message from ${targetPeer.peerId}:`, error);
@@ -693,15 +674,6 @@ class WebRTCPeer {
       console.log('Sending profile from offer side...');
       const profileData = JSON.stringify({ type: 'profile', profile: this.profile });
       sendData(dataChannel, profileData);
-      // Emit message event for sending profile
-      const targetPeerId = dataChannel.label.split(':')[0];
-      eventEmitter.emit('visualizationEvent', {
-        type: 'message',
-        from: this.peerId,
-        to: targetPeerId,
-        message: 'Profile Data',
-        timestamp: Date.now()
-      });
     } catch (error) {
       console.error('Error while sending profile:', error);
     }
