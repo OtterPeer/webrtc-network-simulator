@@ -71,6 +71,8 @@ async function runMultiplePeers(numPeers) {
         console.log(`Peer process ${i + 1} exited with code ${code}`);
       });
     });
+
+    delay(500);
   }
 
   setTimeout(() => {
@@ -96,7 +98,7 @@ async function runMultiplePeers(numPeers) {
   return peerProcesses;
 }
 
-function generateRandomLatLng(centerLat = 37.422, centerLng = -122.084, radiusKm = 50) {
+function generateRandomLatLng(centerLat = 54.372158, centerLng = 18.638306, radiusKm = 50) {
   const earthRadius = 6371;
 
   const radiusRad = radiusKm / earthRadius;

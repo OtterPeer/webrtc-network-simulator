@@ -21,7 +21,7 @@ class DHT extends EventEmitter {
     this.cacheStrategy = this.createCacheStrategy(
       opts.cacheStrategy || 'distance',
       opts.cacheSize || 1000,
-      opts.cacheDistanceThreshold || Math.pow(2, 45), // tested in 50 peers network scenario
+      opts.cacheDistanceThreshold || Math.pow(2, 46), // tested in 50 peers network scenario
       opts.cacheProbability || 0.7
     );
     this.MAX_TTL = 48 * 3600 * 1000; // 48 hours in milliseconds
@@ -47,6 +47,7 @@ class DHT extends EventEmitter {
     )
 
     this.cacheStrategy.on("emptyCache", () => {
+      console.log("Emmiting empty cache event");
         this.emit("visualizationEvent",
           {
             type: 'cache',

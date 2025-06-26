@@ -130,7 +130,7 @@
                 nodes.update({ id: nodeId, color: { background: '#FFFF00' } });
                 addLog(`Node ${nodeId} is caching new message`);
               } else if (state === 'empty') {
-                nodes.update({ id: to, color: { background: '#3498db' } });
+                nodes.update({ id: nodeId, color: { background: '#3498db' } });
                 addLog(`Node ${nodeId} has empty cache`);
               }
             }
@@ -213,7 +213,7 @@
           nodes.update({ id: nodeId, color: { background: '#FFFF00' } });
           addLog(`Node ${nodeId} is caching new message`);
         } else if (state === 'empty') {
-          nodes.update({ id: to, color: { background: '#3498db' } });
+          nodes.update({ id: nodeId, color: { background: '#3498db' } });
           addLog(`Node ${nodeId} has empty cache`);
         }
       }
