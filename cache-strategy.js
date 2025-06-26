@@ -97,6 +97,10 @@ class DistanceBasedCacheStrategy extends CacheStrategy {
       this.accessOrder = this.accessOrder.filter(aid => aid !== id);
     });
 
+    if (this.cachedMessages.size === 0) {
+      this.emit('emptyCache')
+    }
+
     this.emit('delivered');
   }
 
